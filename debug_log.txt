@@ -1,0 +1,4 @@
+[DEBUG] CSV Header: CustID,Name,Sex,Birth,VisitDate,VisitTime,Tel,Mobile,Insurance,VisitType
+[DEBUG] Indices: Chart=0, Name=1, Phone=7, Type=9, Date=4, First=-1, Birth=3, Sex=2
+[DEBUG] Total rows: 0
+[DEBUG] Used rows: 0
