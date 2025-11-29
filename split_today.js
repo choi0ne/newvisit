@@ -1,217 +1,131 @@
+// ============================================================
+// C:\Oldvisit\split_today.js (최원장님 최종 통합 완성본)
+// 기능 1: 데이터 유실 원천 차단 (Append 모드)
+// 기능 2: 날짜 변경 시 지난 장부 자동 백업 및 초기화
+// ============================================================
+
 const fs = require('fs');
+const path = require('path');
 
-// CSV 소스 / 출력 경로
-const SRC = 'C:\\Newvisit\\visit_today.csv';
-const OUT_NEW = 'C:\\Newvisit\\visit_new.txt';
-// const OUT_LIST = 'C:\\Newvisit\\visit_list.txt'; // 재진 리스트는 사용 안 함
+const SRC       = 'C:\\Oldvisit\\visit_today.csv';
+const OUT_QUEUE = 'C:\\Oldvisit\\revisit_queue.txt';
+// OUT_PROCESSING 제거됨 (심플 버전 유지)
+const OUT_DONE  = 'C:\\Oldvisit\\revisit_done.txt';
+const OUT_UNDONE= 'C:\\Oldvisit\\revisit_undone.txt';
 
-// 디버그 로그 파일
-try {
-  fs.writeFileSync('debug_log.txt', '');
-} catch (e) { /* 무시 */ }
+// ------------------------------------------------------------
+// [신규 기능] 날짜가 바뀌면 장부(Done/Undone)를 자동으로 백업하고 비움
+// ------------------------------------------------------------
+function checkAndResetDaily(filePath) {
+    if (!fs.existsSync(filePath)) return;
 
-const log = (msg) => {
-  try {
-    fs.appendFileSync('debug_log.txt', msg + '\n');
-  } catch (e) { /* 무시 */ }
-};
+    const stats = fs.statSync(filePath);
+    const lastModified = stats.mtime; // 마지막 수정 시간
+    const now = new Date();
 
-// 파일 읽기 유틸
-function read(p) {
-  if (!fs.existsSync(p)) return "";
-  const b = fs.readFileSync(p);
-  return b.toString('utf8');
-}
+    // 날짜(일)가 다르면 '지난 장부'로 판단
+    if (lastModified.getDate() !== now.getDate() || 
+        lastModified.getMonth() !== now.getMonth() ||
+        lastModified.getFullYear() !== now.getFullYear()) {
+        
+        // 백업 파일명 생성 (예: revisit_done_2023-10-25.txt)
+        const yyyy = lastModified.getFullYear();
+        const mm = String(lastModified.getMonth() + 1).padStart(2, '0');
+        const dd = String(lastModified.getDate()).padStart(2, '0');
+        const backupName = filePath.replace('.txt', `_${yyyy}-${mm}-${dd}.txt`);
 
-// 헤더에서 컬럼 인덱스 찾기
-function pick(header, cands) {
-  const L = header.map(h => (h || '').toLowerCase());
-  for (const c of cands) {
-    // 1) 완전 일치
-    let i = L.findIndex(h => h === c);
-    if (i >= 0) return i;
-    // 2) 부분 일치
-    i = L.findIndex(h => h.includes(c));
-    if (i >= 0) return i;
-  }
-  return -1;
-}
-
-// CSV 파싱
-function parse(text) {
-  const lines = text.split(/\r?\n/).filter(Boolean);
-  if (!lines.length) return [];
-
-  const header = lines[0].split(',').map(s => s.trim());
-  log(`[DEBUG] CSV Header: ${header.join(',')}`);
-
-  // 필수 컬럼 인덱스
-  const iChart = pick(header, ['custid', 'chart', '차트', '환자번호', 'no']);
-  const iName  = pick(header, ['name', '이름', '환자명']);
-  const iPhone = pick(header, ['mobile', '휴대폰', 'phone', '전화', 'tel']);
-  const iType  = pick(header, ['visittype', '재진', '구분', 'type', 'visit']);
-  const iDate  = pick(header, ['visitdate', '날짜', '일자', 'date']);
-  const iFirst = pick(header, ['first_visit', '최초', 'first', '초진일']);
-
-  // 추가 필드
-  const iBirth = pick(header, ['birth', '생년월일']);
-  const iSex   = pick(header, ['sex', '성별']);
-  const iJumin = pick(header, ['resident', '주민', 'jumin']);
-  const iAddr  = pick(header, ['address', '주소', 'addr']);
-  const iIns   = pick(header, ['insurance', '보험', 'ins']);
-  const iTel   = pick(header, ['tel', '유선', 'home']);
-
-  log(`[DEBUG] Indices: Chart=${iChart}, Name=${iName}, Phone=${iPhone}, Type=${iType}, Date=${iDate}, First=${iFirst}, Birth=${iBirth}, Sex=${iSex}`);
-
-  if (iChart < 0 || iType < 0 || iPhone < 0) {
-    console.error(
-      `[split_today] 필수 컬럼 누락! (chart=${iChart}, type=${iType}, phone=${iPhone}) CSV 헤더: ${header.join(',')}`
-    );
-  }
-
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    log(`[DEBUG] Raw Line ${i}: ${lines[i]}`);
-    const c = lines[i].split(',');
-    const v = k => (k >= 0 && k < c.length ? c[k].trim() : '');
-
-    const pPhone = v(iPhone);
-
-    rows.push({
-      chart:       v(iChart),
-      name:        v(iName),
-      phone:       pPhone,
-      type:        v(iType),
-      date:        v(iDate),
-      first_visit: v(iFirst),
-      birth:       v(iBirth),
-      sex:         v(iSex),
-      jumin:       v(iJumin),
-      addr:        v(iAddr),
-      ins:         v(iIns),
-      tel:         v(iTel)
-    });
-  }
-  return rows;
-}
-
-// 재진 여부 판별
-function isRe(r) {
-  const t = (r.type || '').toLowerCase();
-
-  // 1 = 초진, 2 = 재진, 3 = 재초진(=초진 취급)
-  if (t === '1' || t === '3') return false; // 초진
-  if (t === '2') return true;              // 재진
-
-  // 텍스트 패턴
-  const isExplicitRe =
-    t.includes('재진') ||
-    t.includes('revisit') ||
-    t === 'r' ||
-    t.includes('재');
-
-  if (isExplicitRe) return true;
-
-  // 모호한 경우: 보험명 == 이름이면 재진으로 간주
-  if (r.ins && r.name && r.ins.trim() === r.name.trim()) {
-    return true;
-  }
-
-  return false;
-}
-
-function fmt(r) {
-  return [r.chart, r.name, r.phone].join(',');
-}
-
-// visit_new.txt 에 들어갈 JSON 포맷
-function fmtJson(r) {
-  let birth = r.birth || "";
-  let sex   = r.sex   || "";
-
-  // Birth/Sex 없고 주민번호(######-#######) 있으면 거기서 파생
-  if ((!birth || !sex) && r.jumin && r.jumin.includes('-')) {
-    const parts = r.jumin.split('-');
-    if (parts.length === 2) {
-      const front = parts[0];
-      const back  = parts[1];
-      if (front.length === 6 && back.length >= 1) {
-        const genderDigit = back[0];
-        const yearPrefix =
-          (genderDigit === '1' || genderDigit === '2' ||
-           genderDigit === '5' || genderDigit === '6')
-            ? "19"
-            : "20";
-
-        if (!birth) birth = yearPrefix + front;
-        if (!sex) {
-          sex =
-            (genderDigit === '1' || genderDigit === '3' ||
-             genderDigit === '5' || genderDigit === '7')
-              ? "M"
-              : "F";
+        try {
+            fs.renameSync(filePath, backupName);
+            console.log(`[System] 날짜 변경 감지! 지난 장부를 백업했습니다: ${path.basename(backupName)}`);
+        } catch (e) {
+            console.log(`[System] 백업 중 오류 (무시됨): ${e.message}`);
         }
-      }
     }
-  }
-
-  return {
-    CustID:    r.chart,
-    Name:      r.name,
-    Mobile:    r.phone,
-    Tel:       r.tel || "",
-    Birth:     birth,
-    Sex:       sex,
-    Address:   r.addr || "",
-    Insurance: r.ins || ""
-  };
 }
 
-// 메인 실행부
-try {
-  if (!fs.existsSync(SRC)) {
-    console.log("[split_today] 소스 파일 없음:", SRC);
-    // fs.writeFileSync(OUT_LIST, '');
-    fs.writeFileSync(OUT_NEW, '');
-    process.exit(0);
-  }
-
-  const rawData = read(SRC);
-  const rows = parse(rawData);
-
-  // 날짜 필터 없이, CSV에 들어있는 행 전체 사용
-  const usedRows = rows;
-
-  log(`[DEBUG] Total rows: ${rows.length}`);
-  if (rows.length > 0) {
-    log(`[DEBUG] First row date: ${rows[0].date}, Now: ${new Date().toISOString()}`);
-  }
-  log(`[DEBUG] Used rows: ${usedRows.length}`);
-
-  // 재진 제외 → 초진만
-  const newPatients = usedRows.filter(r => !isRe(r));
-
-  // visit_new.txt (JSON) 저장
-  fs.writeFileSync(
-    OUT_NEW,
-    JSON.stringify(newPatients.map(fmtJson), null, 2),
-    'utf8'
-  );
-
-  // officecall-export.js 용 차트번호 리스트 저장
-  const chartNumbers = newPatients.map(r => r.chart);
-  fs.writeFileSync(
-    'C:\\Newvisit\\new_patients.json',
-    JSON.stringify(chartNumbers, null, 2),
-    'utf8'
-  );
-
-  console.log(
-    `[split_today] 완료: 신규 환자 ${newPatients.length}명 (차트번호: ${chartNumbers.join(', ')})`
-  );
-
-} catch (e) {
-  // fs.writeFileSync(OUT_LIST, '');
-  fs.writeFileSync(OUT_NEW, '');
-  console.error("[split_today] 에러 발생:", e);
+// ============================================================
+// 유틸리티 함수
+// ============================================================
+function readLines(path) {
+  if (!fs.existsSync(path)) return [];
+  return fs.readFileSync(path, 'utf8')
+    .replace(/^\ufeff/, '')
+    .split(/\r?\n/)
+    .map(s => s.trim())
+    .filter(Boolean);
 }
+
+function birthToYYMMDD(b) {
+  if (!b) return '';
+  const d = b.replace(/\D/g, '');
+  return (d.length === 8) ? d.slice(2) : '';
+}
+
+// ============================================================
+// 메인 로직
+// ============================================================
+(function main() {
+  // 1. 실행하자마자 '오래된 장부'인지 검사 (자동 초기화)
+  checkAndResetDaily(OUT_DONE);
+  checkAndResetDaily(OUT_UNDONE);
+  checkAndResetDaily(OUT_QUEUE); 
+
+  if (!fs.existsSync(SRC)) return;
+
+  const raw = fs.readFileSync(SRC, 'utf8').replace(/^\ufeff/, '');
+  const lines = raw.split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) return; 
+
+  // 헤더 파싱
+  const header = lines[0].split(',').map(s => s.trim().toLowerCase());
+  const findIdx = (keywords) => header.findIndex(h => keywords.some(k => h.includes(k)));
+
+  const iChart  = findIdx(['custid', 'chart']);
+  const iName   = findIdx(['name']);
+  const iPhone  = findIdx(['mobile', 'hp', 'phone']); 
+  const iBirth  = findIdx(['birth']);
+  const iSex    = findIdx(['sex']);
+
+  // 2. 이미 알거나(대기), 처리 완료된 환자 명단 로드
+  const known = new Set();
+  const loadKeys = (p) => readLines(p).forEach(l => {
+      const parts = l.split(',');
+      if (parts.length >= 3) known.add(parts[0]+','+parts[2]); // 차트번호+전화번호
+  });
+  
+  loadKeys(OUT_QUEUE);  // 현재 대기 중인 사람
+  loadKeys(OUT_DONE);   // 이미 처리된 사람 (중복 방지 핵심)
+  loadKeys(OUT_UNDONE); // 실패한 사람
+
+  const toAppend = []; // 파일에 추가할 '진짜 새 환자'들
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(',').map(s => s.trim());
+    
+    let rawPhone = cols[iPhone] || '';
+    let cleanPhone = rawPhone.replace(/\D/g, ''); 
+
+    if (!cols[iChart] || cleanPhone.length < 9) continue;
+
+    const key = `${cols[iChart]},${cleanPhone}`;
+    
+    // 이미 큐에 있거나 완료된 사람이면 패스
+    if (known.has(key)) continue;
+
+    const j6 = birthToYYMMDD(cols[iBirth]);
+    const sex = cols[iSex] || "";
+
+    const newLine = `${cols[iChart]},${cols[iName]},${cleanPhone},${j6},${sex}`;
+    toAppend.push(newLine);
+    
+    // 이번 루프 내 중복 방지
+    known.add(key); 
+  }
+
+  // 3. 변경사항이 있을 때만 '이어붙이기(Append)' 수행
+  // 파일을 덮어쓰지 않고 뒤에 추가만 하므로 데이터 유실 원천 차단
+  if (toAppend.length > 0) {
+    fs.appendFileSync(OUT_QUEUE, toAppend.join('\n') + '\n', 'utf8');
+    console.log(`[split_today] 신규 환자 ${toAppend.length}명 대기열 추가.`);
+  }
+})();

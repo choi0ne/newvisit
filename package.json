@@ -13,12 +13,11 @@
   "dependencies": {
     "csv-parser": "^3.2.0",
     "dayjs": "^1.11.19",
-    "msnodesqlv8": "^5.1.1",
-    "mssql": "^12.1.1",
+    "mssql": "^12.1.0",
     "nodemailer": "^7.0.10",
     "playwright": "^1.56.1",
     "playwright-extra": "^4.3.6",
-    "puppeteer": "^24.30.0",
+    "puppeteer": "^24.31.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "xlsx": "^0.18.5"
